@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .config import Config
-from .gemini import GeminiClient
+from .gemini import GeminiClient, classify_error, retry_delay_seconds
 from .pipeline import Pipeline, PipelineResult
 from .store import Store
 
@@ -119,12 +119,26 @@ async def chat_completions(
         # e.g. missing GOOGLE_API_KEY — give the caller an actionable message.
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
+    if not body.messages:
+        raise HTTPException(status_code=400, detail="'messages' must not be empty.")
+
     messages = [m.model_dump() for m in body.messages]
 
     try:
         result: PipelineResult = await pipeline.handle(messages)
-    except Exception as exc:  # Phase 5 hardens this into typed error handling.
-        raise HTTPException(status_code=502, detail=f"Gemini call failed: {exc}") from exc
+    except Exception as exc:
+        # Map upstream failures to sensible HTTP statuses for the caller.
+        kind = classify_error(exc)
+        if kind == "rate_limit":
+            status, retry_after = 429, retry_delay_seconds(exc)
+            headers = {"Retry-After": str(int(retry_after))}
+        elif kind in ("server", "timeout"):
+            status, headers = 503, None
+        else:
+            status, headers = 502, None
+        raise HTTPException(
+            status_code=status, detail=f"Gemini call failed ({kind}): {exc}", headers=headers
+        ) from exc
 
     # GeminiSaver observability headers.
     response.headers["x-geminisaver-cache"] = result.cache_status

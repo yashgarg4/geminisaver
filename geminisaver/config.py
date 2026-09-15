@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -115,6 +115,24 @@ class Config(BaseSettings):
     # Server.
     host: str = "127.0.0.1"
     port: int = 8000
+
+    @model_validator(mode="after")
+    def _validate(self) -> "Config":
+        if not self.tiers:
+            raise ValueError("At least one tier must be configured.")
+        if not (0.0 <= self.cache_threshold <= 1.0):
+            raise ValueError("cache_threshold must be between 0 and 1 (cosine similarity).")
+        if self.semantic_cache_max_entries < 1:
+            raise ValueError("semantic_cache_max_entries must be >= 1.")
+        if not (0 < self.port < 65536):
+            raise ValueError("port must be in 1..65535.")
+        if self.default_tier not in self.tiers:
+            raise ValueError(
+                f"default_tier '{self.default_tier}' is not one of {list(self.tiers)}."
+            )
+        if "frontier" not in self.tiers:
+            raise ValueError("a 'frontier' tier is required for the savings baseline.")
+        return self
 
     def tier(self, name: str) -> Tier:
         return self.tiers[name]

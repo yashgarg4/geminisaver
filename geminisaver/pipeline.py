@@ -7,6 +7,7 @@ request is metered (baseline vs actual) so we can report honest savings.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from .cache import CachedResponse
 from .cache.exact import ExactCache
 from .cache.semantic import SemanticCache
 from .config import Config
-from .gemini import GeminiResult, classify_error
+from .gemini import GeminiResult, classify_error, retry_delay_seconds
 from .router import MAX_FALLBACK_DEPTH, Router
 from .savings import Record, SavingsMeter
 from .store import Store
@@ -199,12 +200,16 @@ class Pipeline:
         )
 
     async def _call_with_fallback(self, messages, tier):
-        """Call Gemini; on a transient 5xx/timeout escalate a tier (capped).
+        """Call Gemini, handling transient failures per error kind.
 
-        429 is a rate limit — never escalate on it (Phase 5 adds backoff);
-        re-raise so the proxy surfaces it.
+        - 5xx / timeout: escalate one tier (a bigger model may be healthy),
+          capped at ``MAX_FALLBACK_DEPTH``.
+        - 429 (rate limit): do NOT escalate (that burns more quota). Back off
+          once for the server-suggested delay, then retry the same tier.
+        - anything else: re-raise for the proxy to surface.
         """
         depth = 0
+        backed_off = False
         while True:
             try:
                 result: GeminiResult = await self.gemini.complete(messages, tier.model)
@@ -221,5 +226,14 @@ class Pipeline:
                     )
                     tier = nxt
                     depth += 1
+                    continue
+                if kind == "rate_limit" and not backed_off:
+                    delay = retry_delay_seconds(exc)
+                    logger.warning(
+                        "Gemini 429 on %s; backing off %.1fs then retrying once",
+                        tier.model, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    backed_off = True
                     continue
                 raise

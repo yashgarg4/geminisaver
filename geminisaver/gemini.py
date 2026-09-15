@@ -7,11 +7,14 @@ Translates OpenAI-style ``messages`` into google-genai ``contents`` +
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
+
+_RETRY_DELAY_RE = re.compile(r"retry(?:\s+in|Delay['\"]?:?\s*['\"]?)\s*([\d.]+)\s*s", re.I)
 
 
 def classify_error(exc: Exception) -> str:
@@ -31,6 +34,17 @@ def classify_error(exc: Exception) -> str:
     if isinstance(exc, TimeoutError) or "timeout" in str(exc).lower():
         return "timeout"
     return "other"
+
+
+def retry_delay_seconds(exc: Exception, default: float = 2.0, cap: float = 20.0) -> float:
+    """Best-effort parse of a server-suggested retry delay (seconds), capped.
+
+    Gemini 429s include a hint like "Please retry in 15.3s" / "retryDelay: '15s'".
+    Falls back to ``default`` when none is found; never returns more than ``cap``.
+    """
+    match = _RETRY_DELAY_RE.search(str(exc))
+    delay = float(match.group(1)) if match else default
+    return min(delay, cap)
 
 
 @dataclass
