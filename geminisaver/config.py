@@ -1,0 +1,125 @@
+"""Configuration: Gemini model tiers, real pricing, and cache/runtime settings.
+
+Pricing was verified against https://ai.google.dev/gemini-api/docs/pricing
+at build time. Rates are USD per 1,000,000 tokens. Model IDs change over
+time, so treat these as the last-verified snapshot, not gospel.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ModelPricing(BaseModel):
+    """Per-1M-token pricing for a single Gemini model.
+
+    Gemini 2.5 Pro uses tiered pricing based on prompt size; the ``*_high``
+    fields kick in above ``tier_threshold_tokens`` input tokens. Flat-priced
+    models simply leave the high rates equal to the base rates.
+    """
+
+    input_per_1m: float
+    output_per_1m: float
+    input_per_1m_high: float | None = None
+    output_per_1m_high: float | None = None
+    tier_threshold_tokens: int = 200_000
+
+    def cost(self, in_tokens: int, out_tokens: int) -> float:
+        """USD cost for a call with the given token counts."""
+        if self.input_per_1m_high is not None and in_tokens > self.tier_threshold_tokens:
+            in_rate = self.input_per_1m_high
+            out_rate = self.output_per_1m_high or self.output_per_1m
+        else:
+            in_rate = self.input_per_1m
+            out_rate = self.output_per_1m
+        return (in_tokens * in_rate + out_tokens * out_rate) / 1_000_000
+
+
+class Tier(BaseModel):
+    """A routing tier: a name, the Gemini model it maps to, and its pricing."""
+
+    name: str
+    model: str
+    pricing: ModelPricing
+
+
+# --- Gemini tiers (IDs + pricing verified at build time) ---
+# flash-lite: classify / extract / format   (cheapest)
+# flash:      summarize / draft / simple QA  (mid)
+# pro:        reasoning / code / multi-step   (frontier)
+DEFAULT_TIERS: dict[str, Tier] = {
+    "cheap": Tier(
+        name="cheap",
+        model="gemini-2.5-flash-lite",
+        pricing=ModelPricing(input_per_1m=0.10, output_per_1m=0.40),
+    ),
+    "medium": Tier(
+        name="medium",
+        model="gemini-2.5-flash",
+        pricing=ModelPricing(input_per_1m=0.30, output_per_1m=2.50),
+    ),
+    "frontier": Tier(
+        name="frontier",
+        model="gemini-2.5-pro",
+        pricing=ModelPricing(
+            input_per_1m=1.25,
+            output_per_1m=10.00,
+            input_per_1m_high=2.50,
+            output_per_1m_high=15.00,
+            tier_threshold_tokens=200_000,
+        ),
+    ),
+}
+
+# Order from cheapest to most capable — used by the router for escalation.
+TIER_ORDER: tuple[str, ...] = ("cheap", "medium", "frontier")
+
+
+class Config(BaseSettings):
+    """Runtime configuration, overridable via environment variables.
+
+    Env vars use the ``GEMINISAVER_`` prefix (e.g. ``GEMINISAVER_CACHE_THRESHOLD``),
+    except ``GOOGLE_API_KEY`` which keeps its conventional name.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="GEMINISAVER_",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    # Gemini auth (conventional name, no prefix).
+    google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
+
+    # Model tiers + pricing.
+    tiers: dict[str, Tier] = Field(default_factory=lambda: dict(DEFAULT_TIERS))
+
+    # Semantic cache: cosine similarity above this counts as a hit.
+    cache_threshold: float = 0.92
+    semantic_cache_max_entries: int = 10_000
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+
+    # Persistence.
+    db_path: Path = Path("geminisaver.db")
+
+    # Default tier when nothing is specified / routing is off.
+    default_tier: str = "medium"
+
+    # Server.
+    host: str = "127.0.0.1"
+    port: int = 8000
+
+    def tier(self, name: str) -> Tier:
+        return self.tiers[name]
+
+    def frontier_pricing(self) -> ModelPricing:
+        """Pricing used for the honest savings baseline (always-frontier)."""
+        return self.tiers["frontier"].pricing
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        """Load config from environment / .env file."""
+        return cls()

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geminisaver"
+version = "0.1.0"
+description = "A self-hosted, drop-in proxy that cuts your Gemini API bill with exact + semantic caching and cost-aware routing."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Yash Garg" }]
+keywords = ["gemini", "llm", "proxy", "semantic-cache", "cost-optimization", "openai-compatible"]
+
+# Runtime deps are pinned in requirements.txt (phase-annotated).
+# This list is intentionally loose so `pip install -e .` stays flexible.
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "google-genai",
+    "pydantic>=2",
+    "pydantic-settings",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+cache = ["sentence-transformers", "faiss-cpu", "numpy"]
+store = ["aiosqlite"]
+dashboard = ["streamlit"]
+test = ["pytest", "pytest-asyncio", "httpx"]
+
+[tool.setuptools.packages.find]
+include = ["geminisaver*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
