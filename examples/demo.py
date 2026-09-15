@@ -18,6 +18,7 @@ import time
 from geminisaver.config import Config
 from geminisaver.gemini import GeminiClient, GeminiResult, classify_error
 from geminisaver.pipeline import Pipeline
+from geminisaver.store import Store
 
 # A realistic workload: cheap (classify/extract/format), medium (summarize/
 # draft/QA), frontier (reason/debug) — plus exact repeats and paraphrases that
@@ -110,27 +111,29 @@ async def main() -> None:
             raise SystemExit("GOOGLE_API_KEY not set — copy .env.example to .env and add your key.")
         client = GeminiClient(cfg.google_api_key)
 
-    pipeline = Pipeline(cfg, client)
+    # Persist to the same DB the dashboard reads, so `make dashboard` shows this run.
+    store = Store(cfg.db_path)
+    pipeline = Pipeline(cfg, client, store=store)
 
     print(f"Running {len(PROMPTS)} prompts through GeminiSaver...\n", flush=True)
     start = time.time()
-    completed = 0
+    skipped = 0
+    quota_warned = False
     for i, prompt in enumerate(PROMPTS, 1):
         try:
             result = await _handle_with_retry(pipeline, prompt)
         except Exception as exc:
+            # One flaky/unavailable prompt shouldn't abort the batch — skip it.
             kind = classify_error(exc)
-            print(f"\nStopped at prompt {i}: {kind} error from Gemini.")
-            if kind == "rate_limit":
+            skipped += 1
+            print(f"{i:>2}. [   SKIPPED  ] ({kind}) {str(exc)[:60]}", flush=True)
+            if kind == "rate_limit" and not quota_warned:
+                quota_warned = True
                 print(
-                    "Free-tier quota hit (20 requests/day/model). Showing the partial\n"
-                    "summary below; re-run after quota resets, on a paid key, or with\n"
-                    "--simulate to see the full mechanics offline.\n"
+                    "     Free-tier quota hit (20 requests/day/model). Remaining\n"
+                    "     prompts on that model will also be skipped.\n"
                 )
-            else:
-                print(f"  {str(exc)[:120]}\n")
-            break
-        completed += 1
+            continue
         tag = result.cache_status
         extra = ""
         if result.cache_status == "hit-semantic":
@@ -152,7 +155,7 @@ async def main() -> None:
     title = "GeminiSaver - savings summary" + ("  (SIMULATED tokens)" if simulate else "")
     print(title)
     print("=" * 64)
-    print(f"Requests           : {t.requests}  (in {elapsed:.1f}s)")
+    print(f"Requests           : {t.requests}  (in {elapsed:.1f}s)" + (f"  [{skipped} skipped]" if skipped else ""))
     print(f"Baseline (frontier): {_fmt(t.total_baseline)}")
     print(f"Actual (GeminiSaver): {_fmt(t.total_actual)}")
     print(f"SAVED              : {_fmt(t.total_saved)}  ({t.pct_reduction*100:.0f}% reduction)")
@@ -164,6 +167,8 @@ async def main() -> None:
         f"Baseline assumption: every request as {cfg.tier('frontier').model} "
         f"with no cache. Savings are baseline - actual; cache hits cost $0."
     )
+    await store.close()
+    print(f"\nPersisted {t.requests} requests to {cfg.db_path} - run `make dashboard` to view.")
 
 
 if __name__ == "__main__":

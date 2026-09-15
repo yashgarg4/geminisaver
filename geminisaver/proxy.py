@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from .config import Config
 from .gemini import GeminiClient
 from .pipeline import Pipeline, PipelineResult
+from .store import Store
 
 app = FastAPI(title="GeminiSaver", version="0.1.0")
 
@@ -95,7 +96,7 @@ def get_pipeline(request: Request) -> Pipeline:
     pipeline = getattr(request.app.state, "pipeline", None)
     if pipeline is None:
         cfg = get_config(request)
-        pipeline = Pipeline(cfg, get_gemini_client(request))
+        pipeline = Pipeline(cfg, get_gemini_client(request), store=Store(cfg.db_path))
         request.app.state.pipeline = pipeline
     return pipeline
 

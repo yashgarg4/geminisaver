@@ -19,10 +19,10 @@ faiss-cpu==1.15.0              # numpy brute-force cosine fallback if this fails
 numpy==2.5.3
 
 # --- Persistence (Phase 4) ---
-aiosqlite==0.20.0
+aiosqlite==0.22.1
 
 # --- Dashboard (Phase 4) ---
-streamlit==1.40.2
+streamlit==1.63.0   # pulls pandas, altair, pyarrow
 
 # --- Tests ---
 pytest==9.1.1

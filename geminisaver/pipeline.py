@@ -17,7 +17,8 @@ from .cache.semantic import SemanticCache
 from .config import Config
 from .gemini import GeminiResult, classify_error
 from .router import MAX_FALLBACK_DEPTH, Router
-from .savings import SavingsMeter
+from .savings import Record, SavingsMeter
+from .store import Store
 
 logger = logging.getLogger("geminisaver.pipeline")
 
@@ -77,9 +78,11 @@ class Pipeline:
         semantic=_AUTO,
         router: Router | None = None,
         meter: SavingsMeter | None = None,
+        store: Store | None = None,
     ) -> None:
         self.cfg = cfg
         self.gemini = gemini_client
+        self.store = store
         self.exact = exact if exact is not None else ExactCache()
         if semantic is _AUTO:
             semantic = SemanticCache(
@@ -100,7 +103,7 @@ class Pipeline:
         # 1) Exact cache — instant, free.
         exact_hit = self.exact.get(key_text)
         if exact_hit is not None:
-            return self._finish_hit(request_id, "hit-exact", exact_hit)
+            return await self._finish_hit(request_id, "hit-exact", exact_hit)
 
         # 2) Semantic cache — embed once, reuse the vector for a miss-store.
         query_embedding = None
@@ -111,7 +114,9 @@ class Pipeline:
             )
             if sem is not None:
                 entry, score = sem
-                return self._finish_hit(request_id, "hit-semantic", entry, similarity=score)
+                return await self._finish_hit(
+                    request_id, "hit-semantic", entry, similarity=score
+                )
 
         # 3) Miss -> route to the cheapest sufficient tier, then call Gemini
         #    with a capped escalation on transient errors.
@@ -142,6 +147,7 @@ class Pipeline:
             out_tokens=result.out_tokens,
             actual_cost=cost,
         )
+        await self._persist(rec)
         return PipelineResult(
             request_id=request_id,
             text=result.text,
@@ -156,7 +162,11 @@ class Pipeline:
             route_reason=decision.reason,
         )
 
-    def _finish_hit(
+    async def _persist(self, rec: Record) -> None:
+        if self.store is not None:
+            await self.store.insert_request(rec)
+
+    async def _finish_hit(
         self,
         request_id: str,
         status: str,
@@ -173,6 +183,7 @@ class Pipeline:
             out_tokens=entry.out_tokens,
             actual_cost=0.0,
         )
+        await self._persist(rec)
         return PipelineResult(
             request_id=request_id,
             text=entry.text,
