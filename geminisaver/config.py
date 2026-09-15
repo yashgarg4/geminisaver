@@ -115,6 +115,18 @@ class Config(BaseSettings):
     def tier(self, name: str) -> Tier:
         return self.tiers[name]
 
+    def resolve_tier(self, requested_model: str) -> Tier:
+        """Map a client-requested model id to a tier.
+
+        Honors a known Gemini model id; otherwise falls back to the default
+        tier (keeps the proxy drop-in for OpenAI clients that send e.g.
+        ``gpt-4o``). Phase 3's router replaces this on cache misses.
+        """
+        for tier in self.tiers.values():
+            if tier.model == requested_model:
+                return tier
+        return self.tier(self.default_tier)
+
     def frontier_pricing(self) -> ModelPricing:
         """Pricing used for the honest savings baseline (always-frontier)."""
         return self.tiers["frontier"].pricing

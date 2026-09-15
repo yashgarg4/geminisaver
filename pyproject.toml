@@ -35,3 +35,6 @@ include = ["geminisaver*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: uses the real embedding model (downloads bge-small on first run)",
+]

@@ -18,7 +18,8 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .config import Config
-from .gemini import GeminiClient, GeminiResult
+from .gemini import GeminiClient
+from .pipeline import Pipeline, PipelineResult
 
 app = FastAPI(title="GeminiSaver", version="0.1.0")
 
@@ -86,17 +87,18 @@ def get_gemini_client(request: Request) -> GeminiClient:
     return client
 
 
-def _resolve_model(cfg: Config, requested: str) -> tuple[str, "object"]:
-    """Map a requested model to (model_id, pricing).
+def get_pipeline(request: Request) -> Pipeline:
+    """Lazily build the savings pipeline (exact + semantic caches + Gemini).
 
-    If the client asked for a known Gemini model we honor it; otherwise we
-    fall back to the default tier. Phase 3 replaces this with real routing.
+    Cached on ``app.state`` so caches persist across requests. Tests can set
+    ``app.state.pipeline`` directly to inject fakes.
     """
-    for tier in cfg.tiers.values():
-        if tier.model == requested:
-            return tier.model, tier.pricing
-    default = cfg.tier(cfg.default_tier)
-    return default.model, default.pricing
+    pipeline = getattr(request.app.state, "pipeline", None)
+    if pipeline is None:
+        cfg = get_config(request)
+        pipeline = Pipeline(cfg, get_gemini_client(request))
+        request.app.state.pipeline = pipeline
+    return pipeline
 
 
 # --- Endpoints ---
@@ -111,32 +113,27 @@ async def health() -> dict:
 async def chat_completions(
     body: ChatCompletionRequest, request: Request, response: Response
 ) -> ChatCompletionResponse:
-    cfg = get_config(request)
     try:
-        client = get_gemini_client(request)
+        pipeline = get_pipeline(request)
     except ValueError as exc:
         # e.g. missing GOOGLE_API_KEY — give the caller an actionable message.
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    model, pricing = _resolve_model(cfg, body.model)
     messages = [m.model_dump() for m in body.messages]
 
     try:
-        result: GeminiResult = await client.complete(
-            messages,
-            model,
-            temperature=body.temperature,
-            max_output_tokens=body.max_tokens,
-        )
+        result: PipelineResult = await pipeline.handle(messages, body.model)
     except Exception as exc:  # Phase 5 hardens this into typed error handling.
         raise HTTPException(status_code=502, detail=f"Gemini call failed: {exc}") from exc
 
-    cost = pricing.cost(result.in_tokens, result.out_tokens)
-
     # GeminiSaver observability headers.
-    response.headers["x-geminisaver-cache"] = "miss"
+    response.headers["x-geminisaver-cache"] = result.cache_status
     response.headers["x-geminisaver-model"] = result.model
-    response.headers["x-geminisaver-cost-usd"] = f"{cost:.6f}"
+    response.headers["x-geminisaver-cost-usd"] = f"{result.cost:.6f}"
+    if result.tier:
+        response.headers["x-geminisaver-tier"] = result.tier
+    if result.similarity is not None:
+        response.headers["x-geminisaver-similarity"] = f"{result.similarity:.4f}"
 
     return ChatCompletionResponse(
         id=f"chatcmpl-{uuid.uuid4().hex}",
