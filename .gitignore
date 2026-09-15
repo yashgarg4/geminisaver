@@ -34,3 +34,5 @@ data/
 .vscode/
 
 INTERNAL_NOTES.md
+# Claude Code runtime
+.claude/scheduled_tasks.lock

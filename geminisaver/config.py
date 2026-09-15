@@ -46,10 +46,20 @@ class Tier(BaseModel):
     pricing: ModelPricing
 
 
-# --- Gemini tiers (IDs + pricing verified at build time) ---
-# flash-lite: classify / extract / format   (cheapest)
-# flash:      summarize / draft / simple QA  (mid)
-# pro:        reasoning / code / multi-step   (frontier)
+# --- Gemini tiers (IDs + pricing verified against the LIVE API at build time) ---
+# cheap:    classify / extract / format   (cheapest)
+# medium:   summarize / draft / simple QA (mid)
+# frontier: reasoning / code / multi-step (most capable)
+#
+# IMPORTANT: model IDs churn. `gemini-2.5-pro` was retired for new keys (404),
+# and the true "pro" models require paid quota (429 on free keys). These
+# defaults are the current, *callable* ladder verified via models.generate_content.
+# To verify/refresh, run: python -m geminisaver.check_models  (see README).
+#
+# Paid-key upgrade: swap the frontier tier for a real Pro model, e.g.
+#   model="gemini-3.1-pro-preview",
+#   pricing=ModelPricing(input_per_1m=2.00, output_per_1m=12.00,
+#                        input_per_1m_high=4.00, output_per_1m_high=18.00),
 DEFAULT_TIERS: dict[str, Tier] = {
     "cheap": Tier(
         name="cheap",
@@ -63,14 +73,8 @@ DEFAULT_TIERS: dict[str, Tier] = {
     ),
     "frontier": Tier(
         name="frontier",
-        model="gemini-2.5-pro",
-        pricing=ModelPricing(
-            input_per_1m=1.25,
-            output_per_1m=10.00,
-            input_per_1m_high=2.50,
-            output_per_1m_high=15.00,
-            tier_threshold_tokens=200_000,
-        ),
+        model="gemini-3.8-flash",
+        pricing=ModelPricing(input_per_1m=0.75, output_per_1m=3.75),
     ),
 }
 

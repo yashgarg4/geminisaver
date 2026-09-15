@@ -10,7 +10,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
+
+
+def classify_error(exc: Exception) -> str:
+    """Bucket a Gemini exception for routing decisions.
+
+    Returns one of: ``"rate_limit"`` (429 — back off, never escalate),
+    ``"server"`` (5xx — transient, safe to escalate a tier), ``"timeout"``
+    (also escalate), or ``"other"``.
+    """
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return "rate_limit"
+    if isinstance(code, int) and 500 <= code <= 599:
+        return "server"
+    if isinstance(exc, genai_errors.ServerError):
+        return "server"
+    if isinstance(exc, TimeoutError) or "timeout" in str(exc).lower():
+        return "timeout"
+    return "other"
 
 
 @dataclass

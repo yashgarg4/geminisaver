@@ -12,7 +12,6 @@ the Gemini call without changing this contract.
 from __future__ import annotations
 
 import time
-import uuid
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -122,7 +121,7 @@ async def chat_completions(
     messages = [m.model_dump() for m in body.messages]
 
     try:
-        result: PipelineResult = await pipeline.handle(messages, body.model)
+        result: PipelineResult = await pipeline.handle(messages)
     except Exception as exc:  # Phase 5 hardens this into typed error handling.
         raise HTTPException(status_code=502, detail=f"Gemini call failed: {exc}") from exc
 
@@ -130,13 +129,16 @@ async def chat_completions(
     response.headers["x-geminisaver-cache"] = result.cache_status
     response.headers["x-geminisaver-model"] = result.model
     response.headers["x-geminisaver-cost-usd"] = f"{result.cost:.6f}"
+    response.headers["x-geminisaver-saved-usd"] = f"{result.saved:.6f}"
     if result.tier:
         response.headers["x-geminisaver-tier"] = result.tier
     if result.similarity is not None:
         response.headers["x-geminisaver-similarity"] = f"{result.similarity:.4f}"
+    if result.route_reason is not None:
+        response.headers["x-geminisaver-route-reason"] = result.route_reason
 
     return ChatCompletionResponse(
-        id=f"chatcmpl-{uuid.uuid4().hex}",
+        id=result.request_id,
         created=int(time.time()),
         model=result.model,
         choices=[
